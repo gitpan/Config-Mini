@@ -42,9 +42,9 @@ package Config::Mini;
 use warnings;
 use strict;
 
-our $VERSION = '0.01';
+our $VERSION = '0.02';
 our %CONF = ();
-
+our $OBJS = {};
 
 
 =head2 Config::Mini::parse_file ($filename)
@@ -68,14 +68,21 @@ Parses @data
 =cut
 sub parse_data
 {
-    my @lines = map { split /(\r\n|\n|\r)/ } @_;
+    my @lines = map { split /\n/ } @_;
 
     my $current = 'general';
     my $count   = 0;
     for (@lines)
     {
-        my $orig = $_;
         $count++;
+
+        s/\r//g;
+        s/\n//g;
+        s/^\s+//;
+        s/\s+$//;
+        $_ || next;
+
+        my $orig = $_;
 
         s/#.*//;
         s/^\s+//;
@@ -89,7 +96,7 @@ sub parse_data
         };
 
         /^.+=.+$/ and do {
-            my ($key, $value) = split /\s+=\s+/, $_, 2;
+            my ($key, $value) = split /\s*=\s*/, $_, 2;
             $CONF{$current}->{$key} ||= [];
             push @{$CONF{$current}->{$key}}, $value;
             next;
@@ -97,6 +104,59 @@ sub parse_data
         
         print STDERR "ConfigParser: Cannot parse >>>$orig<<< (line $count)\n";
     }
+}
+
+
+sub set_config
+{
+    my $section = shift;
+    my $key     = shift;
+    $CONF{$section} ||= {};
+
+    if (defined $key) { $CONF{$section}->{$key} = \@_  }
+    else              { delete $CONF{$section}->{$key} }
+    
+    delete $CONF{$section} unless (keys %{$CONF{$section}});
+    delete $OBJS->{$section};
+}
+
+
+sub delete_section
+{
+    my $section = shift;
+    delete $CONF{$section};
+}
+
+
+sub write_file
+{
+    my $filename = shift;
+    open FP, ">$filename" or die "Cannot write-open $filename!";
+    if ($CONF{general})
+    {
+        write_file_section ('general', $CONF{'general'});
+    }
+    for my $key (sort keys %CONF)
+    {
+        $key eq 'general' and next;
+        write_file_section ($key, $CONF{$key});
+    }
+}
+
+
+sub write_file_section
+{
+    my $name = shift;
+    my $hash = shift;
+    print FP "[$name]\n";
+    for my $key (sort keys %{$hash})
+    {
+        for my $item (@{$hash->{$key}})
+        {
+            print FP "$key=$item\n";
+        }
+    }
+    print FP "\n";
 }
 
 
@@ -133,18 +193,24 @@ Values can be considered as a scalar or an array. Hence, Config::Mini uses
 sub instantiate
 {
     my $section = shift;
-    my $config  = $CONF{$section} || return;
-    my %args    = ();
-    foreach my $key (keys %{$config})
-    {
-        $args{$key}     = $config->{$key}->[0];
-        $args{"__$key"} = $config->{$key};
-    }
-
-    my $class = $args{package} || return \%args;
-    eval "use $class";
-    defined $@ and $@ and warn $@;
-    return $class->new ( %args );
+    $CONF{$section} || return;
+    
+    $OBJS->{$section} ||= do {
+        my $config = $CONF{$section};
+        my %args   = ();
+        foreach my $key (keys %{$config})
+        {
+            $args{$key}     = $config->{$key}->[0];
+            $args{"__$key"} = $config->{$key};
+        }
+    
+        my $class = $args{package} || return \%args;
+        eval "use $class";
+        defined $@ and $@ and warn $@;
+        $class->new ( %args );
+    };
+    
+    return $OBJS->{$section};
 }
 
 
