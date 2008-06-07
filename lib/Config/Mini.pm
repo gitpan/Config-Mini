@@ -3,48 +3,245 @@
 Config::Mini - Very simple INI-style configuration parser
 
 
-=head1 SYNOPSIS
+=head1 SAMPLE CONFIGURATION
 
 In your config file:
 
+  # this is a comment
+  # these will go in section [general] which is the default
   foo = bar
   baz = buz
   
   [section1]
   key1 = val1
   key2 = val2
-
+  
   [section2]
   key3 = val3
   key4 = arrayvalue
   key4 = arrayvalue2
   key4 = arrayvalue3
+  
 
+=head1 USAGE
 
 In your perl code:
 
 use Config::Mini;
-Config::Mini::parse_file ('sample.cfg');
+my $config = Config::Mini->new ('sample.conf');
+print "These are the sections which are defined in the config file:\n";
+print join "\n", $config->sections();
 
-my $foo  = Config::Mini::get ("general", "foo");
-my @key4 = Config::Mini::get ("section2", "key4");
-
-
-=head1 SUMMARY
-
-Config::Mini is a very simple INI style parser.
+# will print 'arrayvalue'
+print $config->section ('section2')->{'key4'};
+print $config->section ('section2')->{'__key4'}->[2];
 
 
-=head1 FUNCTIONS
+=head1 %directives
+
+By default, L<Config::Mini> turns sections into hashes. For instance, the following
+section:
+
+  [test]
+  foo = bar
+  foo = bar2
+  baz = buz
+  
+Will be turned into:
+
+  {
+    foo   => 'bar',
+    baz   => 'buz',
+    __foo => [ 'bar', 'bar2' ],
+    __baz => [ 'buz' ],
+  }
+  
+When you write your own objects, having this convention is fine. However, you may want to instantiate
+other objects from CPAN than your own. For example, a L<Cache::MemCached> is constructed like this in Perl:
+
+  $memd = Cache::Memcached->new {
+    'servers'            => [ "10.0.0.15:11211", "10.0.0.15:11212", "10.0.0.17:11211" ]
+    'debug'              => 0,
+    'compress_threshold' => 10_000,
+  };
+  
+  
+So having the following config won't do:
+
+  [cache]
+  %package = Cache::Memcached
+  servers  = 10.0.0.15:11211
+  servers  = 10.0.0.15:11212
+  servers  = 10.0.0.17:11211
+  debug    = 0
+  compress_threshold = 10_000
+
+Because L<Cache::Memcached> expects 'servers' to be an array, not a scalar.
+
+
+In this case, you can do the following:
+
+  [cache]
+  %package = Cache::Memcached
+  @servers = 10.0.0.15:11211
+  @servers = 10.0.0.15:11212
+  @servers = 10.0.0.17:11211
+  debug    = 0
+  compress_threshold = 10_000
+
+
+This will let L<Config::Mini> know that 'servers' is meant to be an array reference.
+
+If you want, you can also let it know that debug and compress_threshold are just scalars
+so it doesn't create the '__debug' and '__compress_threshold' attributes, using the dollar
+symbol:
+
+  [cache]
+  %package = Cache::Memcached
+  @servers = 10.0.0.15:11211
+  @servers = 10.0.0.15:11212
+  @servers = 10.0.0.17:11211
+  $debug   = 0
+  $compress_threshold = 10_000
+
+The only problem now is that your configuration file is seriously starting to look like Perl,
+so I would recommend using these 'tricks' only where it's 100% necessary.
+
+
+=head1 %include, %package, %constructor
+
+You can use the following commands:
+
+=head2 %include /path/to/file
+
+Will include /path/to/file. Relative paths are supported (it will act as if you were chdir'ed
+to the current config file location), but wildcards at not (well, not yet).
+
+
+=head2 %package My::Package::Name
+
+Will attempt to create an object rather than a file name. For example:
+
+  [database]
+  %package = Rose::DB
+  %constructor = register_db
+  domain   = development
+  type     = main
+  driver   = mysql
+  database = dev_db
+  host     = localhost
+  username = devuser
+  password = mysecret
+
+
+=head2 %constructor constructor_name
+
+Most Perl objects use new() for their constructor method, however sometimes
+the constructor is called something else. If %constructor is specified, then
+it will be called instead of new()
+
+
+=head2 %hashref = true
+
+Some folks prefer to construct their objects this way:
+
+  my $object = Foo->new ( { %args } );
+  
+Instead of
+
+  my $object = Foo->new ( %args );
+
+This directive allows you to accomodate them (Cache::Cache comes to mind).
+So for example, you'd have:
+
+  [cache]
+  %package = Cache::FileCache
+  %hashref = true
+  namespace = MyNamespace
+  default_expires_in = 600
+
+
+=head2 %args = key1 key2 key3
+
+Some modules have constructors where you don't pass a hash, but a simple list of
+arguments. For example:
+
+    File::BLOB->from_file( 'filename.txt' );
+    
+In this case, you can do:
+
+  [fileblob]
+  %package = File::Blob
+  %constructor = from_file
+  %args filename
+  filename = filename.txt
+
 
 =cut
 package Config::Mini;
+use File::Spec;
 use warnings;
 use strict;
 
-our $VERSION = '0.02';
+our $IncludeCount = 0;
+our $VERSION = '0.03';
 our %CONF = ();
 our $OBJS = {};
+
+
+
+=head2 my $config = Config::Mini->new ($config_file);
+
+Creates a new L<Config::Mini> object.
+
+=cut
+sub new
+{
+    my $class = shift;
+    my $file = shift;
+    local %CONF = ();
+    local $OBJS = {};
+    parse_file ($file);
+    
+    my $self = bless {}, $class;
+    foreach my $key (keys %Config::Mini::CONF)
+    {
+        $self->{$key} ||= Config::Mini::instantiate ($key);
+    }
+    
+    return $self;
+}
+
+
+=head2 @config_sections = $config->sections();
+
+Returns a list of section names.
+
+=cut
+sub sections
+{
+    my $self = shift;
+    return $self->section (@_);
+}
+
+
+=head2 my $hash = $config->section ($section_name);
+
+Returns a hashref (or an object) which represents this config section.
+
+=cut
+sub section
+{
+    my $self = shift;
+    my $key  = shift;
+    defined $key and return $self->{$key};
+    return keys %{$self};
+}
+
+
+=head1 FUNCTIONAL STYLE
+
+If you don't want to use the OO-style, you can use the functions below.
 
 
 =head2 Config::Mini::parse_file ($filename)
@@ -55,9 +252,53 @@ Parses config file $filename
 sub parse_file
 {
     my $file = shift;
-    open FP, "<$file" or die "Cannot read-open $file";
-    parse_data (<FP>);
+    local $IncludeCount = 0;
+    my @data = read_data ($file);
+    parse_data (@data);
+}
+
+
+
+sub read_data
+{
+    my $file = shift;
+    $IncludeCount > 10 and return;
+    $IncludeCount++;
+    
+    open FP, "$file" or die "Cannot read-open $file";
+    my @lines = <FP>;
     close FP;
+    
+    my @res = ();
+    foreach my $line (@lines)
+    {
+        chomp ($line);
+        $line =~ /^\%include\s+/ ? push @res, read_data_include ($file, $line) : push @res, $line;
+    }
+
+    $IncludeCount--;    
+    return @res;
+}
+
+
+sub read_data_include
+{
+    my $file = shift;
+    my $line = shift;
+    $line =~ s/\%include\s+//;
+    
+    if ($line =~ /^\//)
+    {
+        $file = $line;
+    }
+    else
+    {
+        ($file) = $file =~ /^(.*)\//;
+        $file = File::Spec->rel2abs ($file);
+        $file .= "/$line";
+    }
+    
+    return read_data ($file);
 }
 
 
@@ -200,14 +441,37 @@ sub instantiate
         my %args   = ();
         foreach my $key (keys %{$config})
         {
-            $args{$key}     = $config->{$key}->[0];
-            $args{"__$key"} = $config->{$key};
+            if ($key =~ s/^\@//)
+            {
+                $args{$key} = $config->{"\@$key"};   
+            }
+            elsif ($key =~ s/^\$//)
+            {
+                $args{$key} = $config->{"\$$key"}->[0];                   
+            }
+            else
+            {
+                $args{$key}     = $config->{$key}->[0];
+                $args{"__$key"} = $config->{$key};
+            }
         }
-    
-        my $class = $args{package} || return \%args;
+
+        my $cons  = delete $args{'%constructor'} || 'new';    
+        my $class = delete $args{'%package'} || $args{package} || return \%args;
+        my $args  = delete $args{'%args'};
+        
         eval "use $class";
         defined $@ and $@ and warn $@;
-        $class->new ( %args );
+        
+        my $hashref = delete $args{'%hashref'} || 'false';
+        
+        my @args = $args ?
+            ( map { $args{$_} } split /\s+/, $args ) :
+            ( %args );
+            
+        lc ($hashref eq 'true') ?
+            $class->$cons ( { @args } ) :
+            $class->$cons ( @args );
     };
     
     return $OBJS->{$section};
