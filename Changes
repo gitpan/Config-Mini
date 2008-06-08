@@ -1,3 +1,6 @@
+0.04. 2008-06-08
+- Added %noargs directive
+
 0.03. 2008-06-08
 - Added OO style interface
 - Added %include, %package, %constructor, %args, %hashref directives

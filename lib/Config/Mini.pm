@@ -184,7 +184,7 @@ use warnings;
 use strict;
 
 our $IncludeCount = 0;
-our $VERSION = '0.03';
+our $VERSION = '0.04';
 our %CONF = ();
 our $OBJS = {};
 
@@ -456,9 +456,10 @@ sub instantiate
             }
         }
 
-        my $cons  = delete $args{'%constructor'} || 'new';    
-        my $class = delete $args{'%package'} || $args{package} || return \%args;
-        my $args  = delete $args{'%args'};
+        my $cons   = delete $args{'%constructor'} || 'new';    
+        my $class  = delete $args{'%package'} || $args{package} || return \%args;
+        my $args   = delete $args{'%args'};
+        my $noargs = delete $args{'%noargs'} || 'false';
         
         eval "use $class";
         defined $@ and $@ and warn $@;
@@ -468,10 +469,10 @@ sub instantiate
         my @args = $args ?
             ( map { $args{$_} } split /\s+/, $args ) :
             ( %args );
-            
-        lc ($hashref eq 'true') ?
-            $class->$cons ( { @args } ) :
-            $class->$cons ( @args );
+        
+        if    ( lc ($noargs)  eq 'true' ) { $class->$cons()             }
+	elsif ( lc ($hashref) eq 'true' ) { $class->$cons ( { @args } ) }
+	else { $class->$cons ( @args ) }
     };
     
     return $OBJS->{$section};
